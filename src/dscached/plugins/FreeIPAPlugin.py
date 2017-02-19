@@ -32,6 +32,7 @@ import ldap3.utils.dn
 import logging
 import errno
 import krb5
+from collections import defaultdict
 from threading import Thread, Condition
 from datetime import datetime
 from plugin import DirectoryServicePlugin, DirectoryState
@@ -53,6 +54,15 @@ LDAP_ATTRIBUTE_MAPPING = {
 }
 
 logger = logging.getLogger(__name__)
+
+
+def _split_bases(dns):
+    """Split a list of DNs into a map of base DNs to a list of RDNs."""
+    out = defaultdict(list)
+    for dn in dns:
+        rdn, _, base_dn = dn.partition(',')
+        out[base_dn].append(rdn)
+    return out
 
 
 class FreeIPAPlugin(DirectoryServicePlugin):
@@ -123,15 +133,14 @@ class FreeIPAPlugin(DirectoryServicePlugin):
             if ret:
                 group = dict(ret['attributes'])
 
-        if get(entry, 'memberOf'):
-            builder = LdapQueryBuilder()
-            qstr = builder.build_query([
-                ('dn', 'in', get(entry, 'memberOf'))
-            ])
+        if contains(entry, 'memberOf'):
+            for base_dn, rdns in _split_bases(get(entry, 'memberOf')).items():
+                qstr = '(|({0}))'.format(')('.join(rdns))
 
-            for r in self.search(self.base_dn, qstr):
-                r = dict(r['attributes'])
-                groups.append(get(r, 'ipaUniqueID.0'))
+                for r in self.search(base_dn, qstr):
+                    r = dict(r['attributes'])
+                    if get(r, 'ipaUniqueID.0'):
+                        groups.append(get(r, 'ipaUniqueID.0'))
 
         if contains(entry, 'ipaNTHash'):
             nthash = binascii.hexlify(entry['ipaNTHash']).decode('ascii')
